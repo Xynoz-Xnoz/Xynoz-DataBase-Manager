@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Xynoz Panel - Secure V4</title>
+  
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+  
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+
+  <style>
+    :root { --primary: #6366f1; --dark: #0f172a; }
+    body { background-color: var(--dark); font-family: 'Inter', sans-serif; color: #e2e8f0; }
+    
+    .glass-panel {
+      background: rgba(30, 41, 59, 0.8);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+    .glass-input {
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: white;
+      transition: all 0.3s;
+    }
+    .glass-input:focus { border-color: var(--primary); outline: none; box-shadow: 0 0 10px rgba(99, 102, 241, 0.2); }
+    .bg-animated { background: radial-gradient(circle at top center, #1e1b4b, #0f172a); }
+    .code-font { font-family: 'JetBrains Mono', monospace; }
+  </style>
+</head>
+<body class="bg-animated min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // --- Notifications ---
+    const ToastContainer = ({ toasts, removeToast }) => (
+      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
+        {toasts.map(t => (
+          <div key={t.id} className={`animate__animated animate__fadeInRight glass-panel p-4 rounded-lg border-l-4 flex gap-3 min-w-[300px] ${t.type === 'success' ? 'border-green-500' : t.type === 'error' ? 'border-red-500' : 'border-blue-500'}`}>
+            <div className="text-sm">
+                <p className="font-bold">{t.title}</p>
+                <p className="text-xs text-gray-400">{t.message}</p>
+            </div>
+            <button onClick={() => removeToast(t.id)} className="ml-auto"><i className="bi bi-x"></i></button>
+          </div>
+        ))}
+      </div>
+    );
+
+    function App() {
+      // --- State ---
+      const [isSetupMode, setIsSetupMode] = useState(true); // Default to setup mode until checked
+      const [user, setUser] = useState(null);
+      const [view, setView] = useState('dashboard');
+      const [loading, setLoading] = useState(false);
+      const [toasts, setToasts] = useState([]);
+      
+      const [users, setUsers] = useState([]);
+      const [servers, setServers] = useState([]);
+
+      // Forms
+      const [loginData, setLoginData] = useState({ user: '', pass: '' });
+      const [setupData, setSetupData] = useState({ user: '', pass: '', confirmPass: '' });
+      const [form, setForm] = useState({ name: "", ram: "1024", disk: "1024", cpu: "100" });
+      const [newUser, setNewUser] = useState({ username: "", password: "", role: "reseller" });
+
+      // Config
+      const [config, setConfig] = useState({
+        domain: "", apikey: "", appkey: "", proxy: "", eggId: "15", locId: "1", pteroUserId: "1", dockerImage: "ghcr.io/parkervcp/yolks:nodejs_18", startup: "node index.js"
+      });
+
+      // --- Init ---
+      useEffect(() => {
+        // Load Config
+        const savedConfig = JSON.parse(localStorage.getItem('xynoz_v4_config'));
+        if (savedConfig) setConfig(savedConfig);
+
+        // Load Users (V4 key to ensure fresh start)
+        let savedUsers = JSON.parse(localStorage.getItem('xynoz_v4_users'));
+        
+        if (!savedUsers || savedUsers.length === 0) {
+          // DATABASE KOSONG -> Setup Mode
+          setIsSetupMode(true);
+          setUsers([]);
+        } else {
+          // ADA USER -> Login Mode
+          setIsSetupMode(false);
+          setUsers(savedUsers);
+        }
+
+        // Check Session
+        const session = JSON.parse(localStorage.getItem('xynoz_v4_session'));
+        if (session) {
+          setUser(session);
+          setView(session.role === 'reseller' ? 'create' : 'dashboard');
+        }
+      }, []);
+
+      const notify = (title, message, type = 'info') => {
+        const id = Date.now();
+        setToasts(prev => [...prev, { id, title, message, type }]);
+        setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+      };
+
+      // --- Logic: SETUP (First Time) ---
+      const handleSetup = (e) => {
+        e.preventDefault();
+        if (!setupData.user || !setupData.pass) return notify('Error', 'Username & Password wajib diisi.', 'error');
+        if (setupData.pass !== setupData.confirmPass) return notify('Error', 'Password tidak cocok.', 'error');
+
+        const firstAdmin = { username: setupData.user, password: setupData.pass, role: 'admin' };
+        const newDb = [firstAdmin];
+        
+        localStorage.setItem('xynoz_v4_users', JSON.stringify(newDb));
+        setUsers(newDb);
+        setIsSetupMode(false); // Switch to login screen
+        notify('Setup Berhasil', 'Akun Admin telah dibuat. Silakan login.', 'success');
+      };
+
+      // --- Logic: AUTH ---
+      const handleLogin = (e) => {
+        e.preventDefault();
+        const found = users.find(u => u.username === loginData.user && u.password === loginData.pass);
+        if (found) {
+            setUser(found);
+            localStorage.setItem('xynoz_v4_session', JSON.stringify(found));
+            setView(found.role === 'reseller' ? 'create' : 'dashboard');
+            notify('Akses Diterima', `Login sebagai ${found.role}`, 'success');
+        } else {
+            notify('Gagal', 'Kredensial salah.', 'error');
+        }
+      };
+
+      const handleLogout = () => {
+        localStorage.removeItem('xynoz_v4_session');
+        setUser(null);
+        setLoginData({ user: '', pass: '' });
+      };
+
+      // --- Logic: APP ---
+      const saveConfig = () => {
+        localStorage.setItem('xynoz_v4_config', JSON.stringify(config));
+        notify('Disimpan', 'Config diperbarui.', 'success');
+      };
+
+      const handleAddUser = () => {
+        if (!newUser.username || !newUser.password) return notify('Error', 'Lengkapi data.', 'error');
+        if (users.find(u => u.username === newUser.username)) return notify('Error', 'Username sudah ada.', 'error');
+        const updated = [...users, { ...newUser }];
+        setUsers(updated);
+        localStorage.setItem('xynoz_v4_users', JSON.stringify(updated));
+        setNewUser({ username: "", password: "", role: "reseller" });
+        notify('Sukses', 'User dibuat.', 'success');
+      };
+
+      const handleDeleteUser = (username) => {
+        if (username === user.username) return notify('Gagal', 'Tidak bisa hapus diri sendiri.', 'error');
+        const updated = users.filter(u => u.username !== username);
+        setUsers(updated);
+        localStorage.setItem('xynoz_v4_users', JSON.stringify(updated));
+        notify('Sukses', 'User dihapus.', 'success');
+      };
+
+      // --- API Calls ---
+      const fetchServers = async () => {
+        if (!config.domain || !config.apikey) return notify('Config Error', 'Setup API belum lengkap.', 'error');
+        setLoading(true);
+        try {
+            const baseUrl = config.domain.endsWith('/') ? config.domain.slice(0, -1) : config.domain;
+            const targetUrl = `${baseUrl}/api/client`;
+            const finalUrl = config.proxy ? `${config.proxy}${targetUrl}` : targetUrl;
+
+            const res = await fetch(finalUrl, {
+                headers: { 'Authorization': `Bearer ${config.apikey}`, 'Accept': 'application/json' }
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            setServers(data.data || []);
+            notify('Updated', `Load ${data.data.length} servers.`, 'success');
+        } catch (error) {
+            notify('API Error', error.message + '. Cek CORS/Proxy.', 'error');
+        }
+        setLoading(false);
+      };
+
+      const createServer = async () => {
+        if (!config.appkey) return notify('Error', 'Isi Application Key (PTLA) di settings.', 'error');
+        setLoading(true);
+        try {
+            const baseUrl = config.domain.endsWith('/') ? config.domain.slice(0, -1) : config.domain;
+            const targetUrl = `${baseUrl}/api/application/servers`;
+            const finalUrl = config.proxy ? `${config.proxy}${targetUrl}` : targetUrl;
+
+            const payload = {
+                "name": form.name,
+                "user": parseInt(config.pteroUserId),
+                "egg": parseInt(config.eggId),
+                "docker_image": config.dockerImage,
+                "startup": config.startup,
+                "environment": { "INST": "npm install", "USER_UPLOAD": "0", "AUTO_UPDATE": "0", "CMD_RUN": "npm start" },
+                "limits": { "memory": parseInt(form.ram), "swap": 0, "disk": parseInt(form.disk), "io": 500, "cpu": parseInt(form.cpu) },
+                "feature_limits": { "databases": 0, "backups": 0 },
+                "allocation": { "default": 0 }
+            };
+
+            const res = await fetch(finalUrl, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${config.appkey}`, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.errors?.[0]?.detail || "Gagal.");
+            }
+            notify('Sukses', `Server ${form.name} dibuat!`, 'success');
+            setForm({ name: "", ram: "1024", disk: "1024", cpu: "100" });
+        } catch (error) {
+            notify('Error', error.message, 'error');
+        }
+        setLoading(false);
+      };
+
+      // --- VIEW: FIRST TIME SETUP ---
+      if (!user && isSetupMode) {
+        return (
+            <div className="flex min-h-screen items-center justify-center p-4">
+                <ToastContainer toasts={toasts} removeToast={(id) => setToasts(prev => prev.filter(t => t.id !== id))} />
+                <div className="glass-panel w-full max-w-md p-8 rounded-2xl animate__animated animate__fadeInUp border-t-4 border-yellow-500">
+                    <div className="text-center mb-8">
+                        <i className="bi bi-shield-lock-fill text-4xl text-yellow-500 mb-2 block"></i>
+                        <h2 className="text-2xl font-bold">Admin Setup</h2>
+                        <p className="text-sm text-gray-400">Buat akun Admin pertama untuk panel ini.</p>
+                    </div>
+                    <form onSubmit={handleSetup} className="space-y-4">
+                        <input type="text" placeholder="Buat Username Baru" value={setupData.user} onChange={e => setSetupData({...setupData, user: e.target.value})} className="w-full p-3 rounded-xl glass-input"/>
+                        <input type="password" placeholder="Buat Password Baru" value={setupData.pass} onChange={e => setSetupData({...setupData, pass: e.target.value})} className="w-full p-3 rounded-xl glass-input"/>
+                        <input type="password" placeholder="Konfirmasi Password" value={setupData.confirmPass} onChange={e => setSetupData({...setupData, confirmPass: e.target.value})} className="w-full p-3 rounded-xl glass-input"/>
+                        <button type="submit" className="w-full bg-yellow-600 hover:bg-yellow-500 text-white font-bold py-3 rounded-xl transition">Simpan Akun Admin</button>
+                    </form>
+                </div>
+            </div>
+        );
+      }
+
+      // --- VIEW: LOGIN ---
+      if (!user && !isSetupMode) {
+        return (
+            <div className="flex min-h-screen items-center justify-center p-4">
+                <ToastContainer toasts={toasts} removeToast={(id) => setToasts(prev => prev.filter(t => t.id !== id))} />
+                <div className="glass-panel w-full max-w-sm p-8 rounded-2xl animate__animated animate__zoomIn">
+                    <div className="text-center mb-8">
+                        <img src="https://files.catbox.moe/005eby.jpg" className="w-24 h-24 rounded-full mx-auto mb-4 border-4 border-gray-700 shadow-lg"/>
+                        <h2 className="text-2xl font-bold">Xynoz Panel</h2>
+                        <p className="text-xs text-gray-400">Secure Access V4</p>
+                    </div>
+                    <form onSubmit={handleLogin} className="space-y-4">
+                        <input type="text" placeholder="Username" value={loginData.user} onChange={e => setLoginData({...loginData, user: e.target.value})} className="w-full p-3 rounded-xl glass-input"/>
+                        <input type="password" placeholder="Password" value={loginData.pass} onChange={e => setLoginData({...loginData, pass: e.target.value})} className="w-full p-3 rounded-xl glass-input"/>
+                        <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition shadow-lg">Login</button>
+                    </form>
+                </div>
+            </div>
+        );
+      }
+
+      // --- VIEW: DASHBOARD ---
+      return (
+        <div className="flex min-h-screen">
+          <ToastContainer toasts={toasts} removeToast={(id) => setToasts(prev => prev.filter(t => t.id !== id))} />
+          
+          <aside className="hidden md:flex flex-col w-64 glass-panel m-4 rounded-2xl h-[calc(100vh-2rem)] fixed left-0 top-0">
+             <div className="p-6 flex items-center gap-3 border-b border-gray-700/30">
+                <img src="https://files.catbox.moe/005eby.jpg" className="w-10 h-10 rounded-full border border-indigo-500"/>
+                <div>
+                    <h3 className="font-bold text-sm truncate w-24">{user.username}</h3>
+                    <span className="text-[10px] px-2 py-0.5 rounded uppercase font-bold bg-white/10">{user.role}</span>
+                </div>
+             </div>
+             <nav className="flex-1 p-4 space-y-2">
+                {['dashboard', 'create', 'list', 'users', 'settings'].map(m => {
+                    if (user.role === 'reseller' && !['create'].includes(m)) return null;
+                    return (
+                        <button key={m} onClick={() => setView(m)} className={`w-full text-left px-4 py-3 rounded-xl capitalize transition ${view === m ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30' : 'text-gray-400 hover:bg-white/5'}`}>
+                            {m}
+                        </button>
+                    )
+                })}
+             </nav>
+             <div className="p-4 border-t border-gray-700/30">
+                <button onClick={handleLogout} className="w-full text-red-400 hover:bg-red-500/10 py-2 rounded-lg text-sm">Logout</button>
+             </div>
+          </aside>
+
+          <main className="flex-1 md:ml-72 p-4 md:p-8 max-w-7xl mx-auto w-full">
+            <header className="mb-8">
+                <h2 className="text-3xl font-bold capitalize">{view}</h2>
+            </header>
+
+            {/* DASHBOARD */}
+            {view === 'dashboard' && user.role === 'admin' && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="glass-panel p-6 rounded-2xl">
+                        <p className="text-gray-400 text-sm">Total User</p>
+                        <p className="text-4xl font-bold">{users.length}</p>
+                    </div>
+                </div>
+            )}
+
+            {/* SETTINGS */}
+            {view === 'settings' && user.role === 'admin' && (
+                <div className="max-w-2xl mx-auto glass-panel p-8 rounded-2xl border-t-4 border-indigo-500">
+                    <h3 className="font-bold mb-4">API Configuration</h3>
+                    <div className="space-y-4">
+                        <input value={config.domain} onChange={e => setConfig({...config, domain: e.target.value})} placeholder="Panel URL" className="w-full p-3 rounded-xl glass-input"/>
+                        <div className="grid grid-cols-2 gap-4">
+                            <input type="password" value={config.apikey} onChange={e => setConfig({...config, apikey: e.target.value})} placeholder="Client API" className="w-full p-3 rounded-xl glass-input"/>
+                            <input type="password" value={config.appkey} onChange={e => setConfig({...config, appkey: e.target.value})} placeholder="App API (PTLA)" className="w-full p-3 rounded-xl glass-input"/>
+                        </div>
+                        <input value={config.proxy} onChange={e => setConfig({...config, proxy: e.target.value})} placeholder="CORS Proxy (Opsional)" className="w-full p-3 rounded-xl glass-input"/>
+                        <div className="grid grid-cols-3 gap-4">
+                            <input value={config.eggId} onChange={e => setConfig({...config, eggId: e.target.value})} placeholder="Egg ID" className="w-full p-3 rounded-xl glass-input"/>
+                            <input value={config.locId} onChange={e => setConfig({...config, locId: e.target.value})} placeholder="Loc ID" className="w-full p-3 rounded-xl glass-input"/>
+                            <input value={config.pteroUserId} onChange={e => setConfig({...config, pteroUserId: e.target.value})} placeholder="Owner User ID" className="w-full p-3 rounded-xl glass-input"/>
+                        </div>
+                        <button onClick={saveConfig} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl">Save</button>
+                    </div>
+                </div>
+            )}
+
+            {/* CREATE SERVER */}
+            {view === 'create' && (
+                <div className="max-w-3xl mx-auto glass-panel p-8 rounded-2xl">
+                    <h3 className="font-bold mb-4">Deploy Server</h3>
+                    <div className="space-y-4">
+                        <input value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="w-full p-3 rounded-xl glass-input" placeholder="Name"/>
+                        <div className="grid grid-cols-3 gap-2">
+                             <input type="number" value={form.ram} onChange={e => setForm({...form, ram: e.target.value})} className="w-full p-3 rounded-xl glass-input" placeholder="RAM"/>
+                             <input type="number" value={form.disk} onChange={e => setForm({...form, disk: e.target.value})} className="w-full p-3 rounded-xl glass-input" placeholder="Disk"/>
+                             <input type="number" value={form.cpu} onChange={e => setForm({...form, cpu: e.target.value})} className="w-full p-3 rounded-xl glass-input" placeholder="CPU"/>
+                        </div>
+                        <button onClick={createServer} disabled={loading} className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-600 text-white font-bold py-3 rounded-xl">
+                            {loading ? 'Processing...' : 'Deploy'}
+                        </button>
+                    </div>
+                </div>
+            )}
+             {/* LIST */}
+            {view === 'list' && user.role === 'admin' && (
+                 <div>
+                    <button onClick={fetchServers} className="mb-4 px-4 py-2 bg-gray-700 rounded">Refresh</button>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {servers.map((srv, i) => (
+                            <div key={i} className="glass-panel p-4 rounded-xl">
+                                <h4 className="font-bold">{srv.attributes.name}</h4>
+                                <p className="text-xs text-gray-400">{srv.attributes.identifier}</p>
+                            </div>
+                        ))}
+                    </div>
+                 </div>
+            )}
+            {/* USERS */}
+            {view === 'users' && user.role === 'admin' && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="glass-panel p-6 rounded-xl">
+                         <h4 className="font-bold mb-2">Add User</h4>
+                         <div className="space-y-2">
+                            <input value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} placeholder="Username" className="w-full p-2 glass-input rounded"/>
+                            <input value={newUser.password} onChange={e => setNewUser({...newUser, password: e.target.value})} placeholder="Password" type="password" className="w-full p-2 glass-input rounded"/>
+                            <select value={newUser.role} onChange={e => setNewUser({...newUser, role: e.target.value})} className="w-full p-2 glass-input rounded text-gray-300 bg-gray-900"><option value="reseller">Reseller</option><option value="admin">Admin</option></select>
+                            <button onClick={handleAddUser} className="w-full bg-green-600 p-2 rounded">Add</button>
+                         </div>
+                    </div>
+                    <div className="glass-panel p-6 rounded-xl">
+                        <h4 className="font-bold mb-2">List</h4>
+                        {users.map((u,i) => (
+                            <div key={i} className="flex justify-between border-b border-gray-700 py-2">
+                                <span>{u.username} <small className="text-gray-400">({u.role})</small></span>
+                                {u.username !== user.username && <button onClick={() => handleDeleteUser(u.username)} className="text-red-400">Del</button>}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+          </main>
+        </div>
+      );
+    }
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
